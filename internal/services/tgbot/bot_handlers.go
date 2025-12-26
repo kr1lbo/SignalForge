@@ -23,14 +23,14 @@ func (b *Bot) handleHelp(message *tgbotapi.Message) {
 		"*Creating alerts:*\n" +
 		"`/new <exchange> <symbol> <price> <direction> [notes]`\n\n" +
 		"*Parameters:*\n" +
-		"• exchange: `gate` (Gate.io) - more coming soon!\n" +
+		"• exchange: `gate` (Gate.io) or `bybit` (Bybit)\n" +
 		"• symbol: Trading pair (e.g., `BTCUSDT`, `ETHUSDT`)\n" +
 		"• price: Target price\n" +
 		"• direction: `above` or `below`\n" +
 		"• notes: Optional notes\n\n" +
 		"*Examples:*\n" +
 		"`/new gate BTCUSDT 100000 above`\n" +
-		"`/new gate ETHUSDT 3000 below My ETH buy target`\n\n" +
+		"`/new bybit ETHUSDT 3000 below My ETH buy target`\n\n" +
 		"*Or use the menu:*\n" +
 		"📋 My Alerts - View all active alerts\n" +
 		"➕ New Alert - Quick guide to create\n" +
@@ -43,12 +43,13 @@ func (b *Bot) handleNewAlertButton(message *tgbotapi.Message) {
 	text := "➕ *Create New Alert*\n\n" +
 		"Use this command format:\n\n" +
 		"`/new <exchange> <symbol> <price> <direction>`\n\n" +
-		"*Example:*\n" +
-		"`/new gate BTCUSDT 100000 above`\n\n" +
+		"*Examples:*\n" +
+		"`/new gate BTCUSDT 100000 above`\n" +
+		"`/new bybit ETHUSDT 3500 below`\n\n" +
 		"*Available exchanges:*\n" +
-		"• gate - Gate.io ✅\n\n" +
+		"• gate - Gate.io ✅\n" +
+		"• bybit - Bybit ✅\n\n" +
 		"*Coming soon:*\n" +
-		"• bybit - Bybit 🔜\n" +
 		"• binance - Binance 🔜\n\n" +
 		"*Direction:*\n" +
 		"• above - Alert when price goes above target\n" +
@@ -79,16 +80,21 @@ func (b *Bot) handleNew(message *tgbotapi.Message, user *repository.User) {
 	}
 
 	// Validate exchange - only implemented ones
-	if exchange != "gate" {
-		if exchange == "bybit" || exchange == "binance" {
+	if exchange != "gate" && exchange != "bybit" {
+		if exchange == "binance" {
 			b.sendMessageWithMenu(message.Chat.ID,
-				"❌ "+strings.Title(exchange)+" is not yet supported.\n\n"+
-					"Currently available:\n• gate - Gate.io ✅\n\n"+
-					"Coming soon:\n• bybit - Bybit 🔜\n• binance - Binance 🔜")
+				"❌ Binance is not yet supported.\n\n"+
+					"Currently available:\n"+
+					"• gate - Gate.io ✅\n"+
+					"• bybit - Bybit ✅\n\n"+
+					"Coming soon:\n"+
+					"• binance - Binance 🔜")
 		} else {
 			b.sendMessageWithMenu(message.Chat.ID,
 				"❌ Unknown exchange.\n\n"+
-					"Currently available:\n• gate - Gate.io ✅")
+					"Currently available:\n"+
+					"• gate - Gate.io ✅\n"+
+					"• bybit - Bybit ✅")
 		}
 		return
 	}

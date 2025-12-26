@@ -14,6 +14,7 @@ import (
 	"SignalForge/internal/domain/ratelimit"
 	"SignalForge/internal/infra/config"
 	"SignalForge/internal/infra/db/postgres"
+	"SignalForge/internal/infra/exchanges/bybit"
 	"SignalForge/internal/infra/exchanges/gate"
 	"SignalForge/internal/infra/notification/pushover"
 	"SignalForge/internal/infra/notification/telegram"
@@ -85,8 +86,11 @@ func New(cfg *config.Config, logger *slog.Logger) (*Application, error) {
 	gateStream := gate.New(logger, normalizer)
 	streams["gate"] = gateStream
 
-	// TODO: Add Bybit and Binance when ready
-	// streams["bybit"] = bybit.New(logger, normalizer)
+	// Bybit stream
+	bybitStream := bybit.New(logger, normalizer)
+	streams["bybit"] = bybitStream
+
+	// TODO: Add Binance when ready
 	// streams["binance"] = binance.New(logger, normalizer)
 
 	// 6. Create rate limiters

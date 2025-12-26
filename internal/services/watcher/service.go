@@ -1,8 +1,6 @@
 package watcher
 
 import (
-	"SignalForge/internal/domain/exchange"
-	"SignalForge/internal/domain/repository"
 	"SignalForge/internal/infra/symbol"
 	"context"
 	"log/slog"
@@ -10,6 +8,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"SignalForge/internal/domain/exchange"
+	"SignalForge/internal/domain/repository"
 )
 
 // Service watches price streams and triggers alerts
@@ -232,7 +233,6 @@ func (s *Service) performUnsubscribe(exchange, symbol string) {
 	}
 
 	delete(s.subscriptions, key)
-	s.logger.Info("unsubscribed", "exchange", exchange, "symbol", symbol)
 }
 
 func (s *Service) restoreSubscriptions() error {
