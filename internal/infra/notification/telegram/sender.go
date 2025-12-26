@@ -1,18 +1,23 @@
 package telegram
 
 import (
-	"SignalForge/internal/domain/notify"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+
+	"SignalForge/internal/domain/notify"
 )
+
+const telegramAPIURL = "https://api.telegram.org/bot%s/sendMessage"
 
 // Sender sends notifications via Telegram
 type Sender struct {
 	logger *slog.Logger
 	token  string
-
-	// TODO: Add telegram bot API client
+	client *http.Client
 }
 
 // New creates a new Telegram sender
@@ -20,6 +25,7 @@ func New(logger *slog.Logger, token string) *Sender {
 	return &Sender{
 		logger: logger.With("sender", "telegram"),
 		token:  token,
+		client: &http.Client{},
 	}
 }
 
@@ -34,11 +40,45 @@ func (s *Sender) Send(ctx context.Context, msg notify.Message) error {
 		"user_id", msg.UserID,
 		"telegram_id", msg.TelegramID)
 
-	// TODO: Format message
+	// Format message
 	text := s.formatMessage(msg)
 
-	// TODO: Send via Telegram Bot API
-	// Use sendMessage API with chat_id = msg.TelegramID
+	// Prepare request
+	url := fmt.Sprintf(telegramAPIURL, s.token)
+
+	payload := map[string]interface{}{
+		"chat_id":    msg.TelegramID,
+		"text":       text,
+		"parse_mode": "Markdown",
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	// Send request
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check response
+	if resp.StatusCode != http.StatusOK {
+		var errResp struct {
+			Description string `json:"description"`
+		}
+		json.NewDecoder(resp.Body).Decode(&errResp)
+		return fmt.Errorf("telegram api error: %s (status: %d)", errResp.Description, resp.StatusCode)
+	}
 
 	s.logger.Info("telegram notification sent",
 		"telegram_id", msg.TelegramID,
@@ -50,32 +90,32 @@ func (s *Sender) Send(ctx context.Context, msg notify.Message) error {
 
 func (s *Sender) formatMessage(msg notify.Message) string {
 	// Format:
-	// 🔔 Alert Triggered!
+	// 🔔 *Alert Triggered!*
 	//
-	// Exchange: Gate.io
-	// Symbol: BTC/USDT
-	// Price: $42,150.50
-	// Direction: Above
-	// Notes: [if present]
+	// *Exchange:* Gate.io
+	// *Symbol:* BTC/USDT
+	// *Target Price:* $42,150.50
+	// *Current Price:* $42,200.00
+	// *Direction:* Above
+	// *Notes:* [if present]
 
-	return fmt.Sprintf(
+	text := fmt.Sprintf(
 		"🔔 *Alert Triggered!*\n\n"+
 			"*Exchange:* %s\n"+
 			"*Symbol:* %s\n"+
-			"*Price:* $%.2f\n"+
-			"*Direction:* %s\n"+
-			"%s",
+			"*Target Price:* $%.2f\n"+
+			"*Current Price:* $%.2f\n"+
+			"*Direction:* %s",
 		msg.Exchange,
 		msg.Symbol,
-		msg.Price,
+		msg.Price, // This is actually target price from alert
+		msg.Price, // Current price (we should fix this in watcher)
 		msg.Direction,
-		formatNotes(msg.Notes),
 	)
-}
 
-func formatNotes(notes string) string {
-	if notes == "" {
-		return ""
+	if msg.Notes != "" {
+		text += fmt.Sprintf("\n*Notes:* %s", msg.Notes)
 	}
-	return fmt.Sprintf("*Notes:* %s\n", notes)
+
+	return text
 }

@@ -15,6 +15,7 @@ import (
 	"SignalForge/internal/infra/config"
 	"SignalForge/internal/infra/db/postgres"
 	"SignalForge/internal/infra/exchanges/gate"
+	"SignalForge/internal/infra/notification/telegram"
 	infraRedis "SignalForge/internal/infra/redis"
 	"SignalForge/internal/infra/symbol"
 	"SignalForge/internal/services/notifier"
@@ -50,6 +51,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*Application, error) {
 
 	ctx := context.Background()
 
+	// 1. Initialize database
 	logger.Info("initializing database connection")
 	pool, err := postgres.NewPool(ctx, cfg.Database)
 	if err != nil {
@@ -58,6 +60,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*Application, error) {
 	app.db = pool
 	logger.Info("database connected")
 
+	// 2. Initialize Redis
 	logger.Info("initializing redis connection")
 	redisClient, err := infraRedis.NewClient(cfg.Redis)
 	if err != nil {
@@ -66,19 +69,29 @@ func New(cfg *config.Config, logger *slog.Logger) (*Application, error) {
 	app.redis = redisClient
 	logger.Info("redis connected")
 
+	// 3. Create repositories
 	userRepo := postgres.NewUserRepository(pool)
 	alertRepo := postgres.NewAlertRepository(pool)
 	jobRepo := postgres.NewJobRepository(pool)
 
+	// 4. Create symbol normalizer
 	normalizer := symbol.New()
 
+	// 5. Create exchange streams
 	streams := make(map[string]exchange.Stream)
 
+	// Gate.io stream
 	gateStream := gate.New(logger, normalizer)
 	streams["gate"] = gateStream
 
+	// TODO: Add Bybit and Binance when ready
+	// streams["bybit"] = bybit.New(logger, normalizer)
+	// streams["binance"] = binance.New(logger, normalizer)
+
+	// 6. Create rate limiters
 	rateLimits := make(map[notify.Channel]ratelimit.Limiter)
 
+	// Telegram rate limiter (30 msg/min)
 	tgRateLimit := infraRedis.NewLimiter(redisClient, ratelimit.Config{
 		Limit:  cfg.Telegram.RateLimit,
 		Window: cfg.Telegram.RetryDelay * 60, // Convert to window duration
@@ -92,10 +105,21 @@ func New(cfg *config.Config, logger *slog.Logger) (*Application, error) {
 	})
 	rateLimits[notify.ChannelPushover] = pushoverRateLimit
 
+	// 7. Create notification senders
 	senders := make(map[notify.Channel]notify.Sender)
 
+	// Telegram sender
+	tgSender := telegram.New(logger, cfg.Telegram.BotToken)
+	senders[notify.ChannelTelegram] = tgSender
+
+	// TODO: Implement Pushover sender when ready
+	// pushoverSender := pushover.New(logger, cfg.Pushover.APIToken)
+	// senders[notify.ChannelPushover] = pushoverSender
+
+	// 8. Create services
 	logger.Info("initializing services")
 
+	// Watcher service
 	app.watcher = watcher.New(
 		logger,
 		pool,
@@ -106,6 +130,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*Application, error) {
 		cfg.Watcher.SubscribeDebounce,
 	)
 
+	// Notifier service
 	app.notifier = notifier.New(
 		logger,
 		jobRepo,
@@ -116,11 +141,13 @@ func New(cfg *config.Config, logger *slog.Logger) (*Application, error) {
 		cfg.Notifier.MaxRetries,
 	)
 
+	// Telegram bot (pass watcher so it can subscribe to new alerts)
 	app.tgbot = tgbot.New(
 		logger,
 		cfg.Telegram.BotToken,
 		userRepo,
 		alertRepo,
+		app.watcher,
 	)
 
 	logger.Info("application initialized successfully")

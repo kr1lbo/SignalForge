@@ -88,6 +88,7 @@ func (s *Stream) connect() error {
 
 	dialer := websocket.DefaultDialer
 	dialer.HandshakeTimeout = 10 * time.Second
+	dialer.EnableCompression = true
 
 	// Gate.io requires this header for decimal size support
 	headers := map[string][]string{
@@ -99,24 +100,10 @@ func (s *Stream) connect() error {
 		return err
 	}
 
-	// ВАЖНО: Обработка понгов от биржи
-	conn.SetPongHandler(func(string) error {
-		// Продлеваем жизнь соединению при получении ответа
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-		return nil
-	})
-
-	// ВАЖНО: Автоматический ответ на ping от сервера
-	conn.SetPingHandler(func(appData string) error {
-		// Gate.io отправляет WebSocket Ping, мы должны ответить Pong
-		err := conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
-		if err != nil {
-			s.logger.Error("failed to send pong", "error", err)
-		}
-		// Продлеваем read deadline
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-		return nil
-	})
+	// Gorilla WebSocket automatically handles ping/pong
+	// We just need to ensure read/write don't timeout
+	conn.SetReadDeadline(time.Time{}) // No deadline - pings will keep it alive
+	conn.SetWriteDeadline(time.Time{})
 
 	s.conn = conn
 	var sessCtx context.Context
@@ -215,15 +202,11 @@ func (s *Stream) readMessages(ctx context.Context, conn *websocket.Conn) {
 	defer s.wg.Done()
 	defer s.triggerReconnect()
 
-	// Если за 60 секунд не пришло ни одного сообщения - соединение мертво
-	readWait := 60 * time.Second
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
-			conn.SetReadDeadline(time.Now().Add(readWait))
 			_, data, err := conn.ReadMessage()
 			if err != nil {
 				if ctx.Err() == nil {
@@ -242,31 +225,10 @@ func (s *Stream) readMessages(ctx context.Context, conn *websocket.Conn) {
 func (s *Stream) pingHandler(ctx context.Context, conn *websocket.Conn) {
 	defer s.wg.Done()
 
-	// Gate.io сам отправляет WebSocket Ping каждые ~20 секунд
-	// Мы просто отвечаем через SetPingHandler
-	// Этот handler нужен только для application-level ping (опционально)
-
-	ticker := time.NewTicker(20 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// Опциональный application-level ping для проверки соединения
-			pingMsg := pingMessage{
-				Time:    time.Now().Unix(),
-				Channel: "futures.ping",
-			}
-
-			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			if err := conn.WriteJSON(pingMsg); err != nil {
-				s.logger.Error("application ping failed", "error", err)
-				return
-			}
-		}
-	}
+	// Gate.io handles ping/pong automatically at protocol level
+	// No need for application-level pings
+	// Just keep this goroutine alive to match the Start() wg.Add(2)
+	<-ctx.Done()
 }
 
 func (s *Stream) reconnectHandler() {
@@ -299,11 +261,24 @@ func (s *Stream) triggerReconnect() {
 
 func (s *Stream) sendMessage(msg interface{}) error {
 	s.connMu.RLock()
-	defer s.connMu.RUnlock()
-	if s.conn == nil {
+	conn := s.conn
+	s.connMu.RUnlock()
+
+	if conn == nil {
 		return fmt.Errorf("connection closed")
 	}
-	return s.conn.WriteJSON(msg)
+
+	// Set write deadline to prevent hanging
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	err := conn.WriteJSON(msg)
+
+	if err != nil {
+		// If write failed, trigger reconnect
+		s.logger.Warn("write failed, triggering reconnect", "error", err)
+		s.triggerReconnect()
+	}
+
+	return err
 }
 
 func (s *Stream) handleMessage(data []byte) error {

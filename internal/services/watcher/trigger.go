@@ -101,6 +101,17 @@ func (s *Service) triggerAlert(alert *repository.AlertWithUser, event price.Even
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 
+	// 4. Unsubscribe from this exchange/symbol (with debounce)
+	// This decreases refCount, and if no other alerts need this subscription,
+	// it will unsubscribe after 30 seconds
+	if err := s.Unsubscribe(event.Exchange, event.Symbol); err != nil {
+		s.logger.Error("failed to unsubscribe after alert fired",
+			"exchange", event.Exchange,
+			"symbol", event.Symbol,
+			"error", err)
+		// Don't fail - this is just cleanup
+	}
+
 	return nil
 }
 
