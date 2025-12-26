@@ -1,0 +1,114 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Build directories
+/bin/
+/build/
+/dist/
+
+# Dependency directories (remove the comment below to include it)
+vendor/
+
+# Go build cache
+.cache/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+*.env
+
+# Configuration files with secrets
+config.local.yaml
+config.prod.yaml
+secrets.yaml
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+/data/
+
+# Logs
+*.log
+logs/
+/tmp/
+
+# Test coverage
+coverage.txt
+coverage.html
+*.cover
+
+# Air live reload (if using)
+tmp/
+.air.toml
+
+# Goose (database migrations state)
+# Keep migrations themselves, ignore state
+.goose_version
+
+# Redis dump
+dump.rdb
+
+# Docker volumes
+volumes/
+
+# Terraform (if using)
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Generated code (опционально, зависит от вашего workflow)
+# Если хотите коммитить сгенерированный sqlc код, закомментируйте строку ниже
+# internal/infra/db/postgres/sqlc/*.go
+
+# Local development scripts
+/scripts/local/
+dev-*.sh
+
+# OS specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Certificates and keys
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Profiling data
+*.prof
+*.pprof
+cpu.out
+mem.out
