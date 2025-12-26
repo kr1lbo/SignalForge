@@ -1,0 +1,43 @@
+server:
+  environment: dev
+  log_level: info
+
+database:
+  host: localhost
+  port: 5432
+  user: signalforge
+  password: signalforge
+  database: signalforge
+  ssl_mode: disable
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: 5m
+
+redis:
+  host: localhost
+  port: 6379
+  password: ""
+  db: 0
+
+telegram:
+  bot_token: ""
+  rate_limit: 30              # messages per minute
+  retry_attempts: 3
+  retry_delay: 2s
+
+pushover:
+  api_token: ""
+  rate_limit: 250             # messages per minute (Pushover limit: 10000/month)
+  retry_attempts: 3
+  retry_delay: 2s
+
+watcher:
+  subscribe_debounce: 30s     # delay before unsubscribe when last alert removed
+  reconnect_delay: 5s
+  ping_interval: 30s
+
+notifier:
+  workers: 3                  # number of concurrent workers
+  poll_interval: 1s           # how often to poll for new jobs
+  max_retries: 3              # max retry attempts per job
+  stuck_job_window: 5m        # consider job stuck after this duration
