@@ -260,9 +260,9 @@ func (b *Bot) handleNew(message *tgbotapi.Message, user *repository.User) {
 			"*ID:* %d\n"+
 			"*Exchange:* %s\n"+
 			"*Symbol:* %s\n"+
-			"*Price:* $%.2f\n"+
+			"*Price:* %s\n"+
 			"*Direction:* %s",
-		alert.ID, exchange, symbol, price, direction,
+		alert.ID, exchange, symbol, formatPrice(price), direction,
 	)
 	if notes != "" {
 		text += fmt.Sprintf("\n*Notes:* %s", notes)
@@ -272,6 +272,22 @@ func (b *Bot) handleNew(message *tgbotapi.Message, user *repository.User) {
 	}
 
 	b.sendMarkdown(message.Chat.ID, text)
+}
+
+// formatPrice formats price with appropriate precision based on magnitude
+func formatPrice(price float64) string {
+	switch {
+	case price >= 1000:
+		return fmt.Sprintf("$%,.2f", price)
+	case price >= 1:
+		return fmt.Sprintf("$%.2f", price)
+	case price >= 0.01:
+		return fmt.Sprintf("$%.4f", price)
+	case price >= 0.0001:
+		return fmt.Sprintf("$%.6f", price)
+	default:
+		return fmt.Sprintf("$%.8f", price)
+	}
 }
 
 func (b *Bot) handleList(message *tgbotapi.Message, user *repository.User) {
@@ -299,10 +315,10 @@ func (b *Bot) handleList(message *tgbotapi.Message, user *repository.User) {
 		text += fmt.Sprintf(
 			"*#%d* - %s\n"+
 				"Exchange: %s | Symbol: %s\n"+
-				"Price: $%.2f %s\n"+
+				"Price: %s %s\n"+
 				"Status: %s\n\n",
 			alert.ID, alert.Symbol, alert.Exchange, alert.Symbol,
-			alert.Price, alert.Direction, status,
+			formatPrice(alert.Price), alert.Direction, status,
 		)
 	}
 

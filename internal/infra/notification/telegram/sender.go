@@ -89,27 +89,18 @@ func (s *Sender) Send(ctx context.Context, msg notify.Message) error {
 }
 
 func (s *Sender) formatMessage(msg notify.Message) string {
-	// Format:
-	// 🔔 *Alert Triggered!*
-	//
-	// *Exchange:* Gate.io
-	// *Symbol:* BTC/USDT
-	// *Target Price:* $42,150.50
-	// *Current Price:* $42,200.00
-	// *Direction:* Above
-	// *Notes:* [if present]
+	// Format price with appropriate precision
+	priceFormat := s.formatPrice(msg.Price)
 
 	text := fmt.Sprintf(
 		"🔔 *Alert Triggered!*\n\n"+
 			"*Exchange:* %s\n"+
 			"*Symbol:* %s\n"+
-			"*Target Price:* $%.2f\n"+
-			"*Current Price:* $%.2f\n"+
+			"*Target Price:* %s\n"+
 			"*Direction:* %s",
 		msg.Exchange,
 		msg.Symbol,
-		msg.Price, // This is actually target price from alert
-		msg.Price, // Current price (we should fix this in watcher)
+		priceFormat,
 		msg.Direction,
 	)
 
@@ -118,4 +109,25 @@ func (s *Sender) formatMessage(msg notify.Message) string {
 	}
 
 	return text
+}
+
+// formatPrice formats price with appropriate precision based on magnitude
+func (s *Sender) formatPrice(price float64) string {
+	switch {
+	case price >= 1000:
+		// Large prices: $42,150.50
+		return fmt.Sprintf("$%,.2f", price)
+	case price >= 1:
+		// Medium prices: $42.15
+		return fmt.Sprintf("$%.2f", price)
+	case price >= 0.01:
+		// Small prices: $0.0785
+		return fmt.Sprintf("$%.4f", price)
+	case price >= 0.0001:
+		// Very small prices: $0.000785
+		return fmt.Sprintf("$%.6f", price)
+	default:
+		// Tiny prices: $0.00000785
+		return fmt.Sprintf("$%.8f", price)
+	}
 }

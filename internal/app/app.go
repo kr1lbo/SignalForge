@@ -15,6 +15,7 @@ import (
 	"SignalForge/internal/infra/config"
 	"SignalForge/internal/infra/db/postgres"
 	"SignalForge/internal/infra/exchanges/gate"
+	"SignalForge/internal/infra/notification/pushover"
 	"SignalForge/internal/infra/notification/telegram"
 	infraRedis "SignalForge/internal/infra/redis"
 	"SignalForge/internal/infra/symbol"
@@ -112,9 +113,9 @@ func New(cfg *config.Config, logger *slog.Logger) (*Application, error) {
 	tgSender := telegram.New(logger, cfg.Telegram.BotToken)
 	senders[notify.ChannelTelegram] = tgSender
 
-	// TODO: Implement Pushover sender when ready
-	// pushoverSender := pushover.New(logger, cfg.Pushover.APIToken)
-	// senders[notify.ChannelPushover] = pushoverSender
+	// Pushover sender
+	pushoverSender := pushover.New(logger, cfg.Pushover.APIToken)
+	senders[notify.ChannelPushover] = pushoverSender
 
 	// 8. Create services
 	logger.Info("initializing services")
