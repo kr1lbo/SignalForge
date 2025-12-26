@@ -115,8 +115,8 @@ func (s *Sender) formatMessage(msg notify.Message) string {
 func (s *Sender) formatPrice(price float64) string {
 	switch {
 	case price >= 1000:
-		// Large prices: $42,150.50
-		return fmt.Sprintf("$%,.2f", price)
+		// Large prices: $42150.50
+		return fmt.Sprintf("$%.2f", price)
 	case price >= 1:
 		// Medium prices: $42.15
 		return fmt.Sprintf("$%.2f", price)

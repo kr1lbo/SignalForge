@@ -1,12 +1,14 @@
 package tgbot
 
 import (
-	"SignalForge/internal/domain/repository"
 	"fmt"
 	"strconv"
 	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
+	"SignalForge/internal/domain/repository"
+	"SignalForge/internal/infra/metrics"
 )
 
 func (b *Bot) handleCallbackQuery(query *tgbotapi.CallbackQuery) {
@@ -199,6 +201,9 @@ func (b *Bot) deleteAlert(chatID int64, user *repository.User, alertID int64) {
 		b.sendMessageWithMenu(chatID, "❌ Failed to delete alert")
 		return
 	}
+
+	// Record alert deleted metric
+	metrics.RecordAlertDeleted(alert.Exchange)
 
 	// Unsubscribe from watcher
 	if err := b.watcher.Unsubscribe(alert.Exchange, alert.Symbol); err != nil {

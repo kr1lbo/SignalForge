@@ -10,6 +10,7 @@ import (
 
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`
+	Metrics  MetricsConfig  `yaml:"metrics"`
 	Database DatabaseConfig `yaml:"database"`
 	Redis    RedisConfig    `yaml:"redis"`
 	Telegram TelegramConfig `yaml:"telegram"`
@@ -21,6 +22,11 @@ type Config struct {
 type ServerConfig struct {
 	Environment string `yaml:"environment"` // dev, prod
 	LogLevel    string `yaml:"log_level"`   // debug, info, warn, error
+}
+
+type MetricsConfig struct {
+	Enabled bool `yaml:"enabled"`
+	Port    int  `yaml:"port"`
 }
 
 type DatabaseConfig struct {
@@ -93,6 +99,9 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) setDefaults() {
+	if c.Metrics.Port == 0 {
+		c.Metrics.Port = 9090
+	}
 	if c.Database.MaxOpenConns == 0 {
 		c.Database.MaxOpenConns = 25
 	}

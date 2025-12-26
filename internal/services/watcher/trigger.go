@@ -1,18 +1,23 @@
 package watcher
 
 import (
+	"encoding/json"
+	"fmt"
+	"time"
+
 	"SignalForge/internal/domain/notify"
 	"SignalForge/internal/domain/price"
 	"SignalForge/internal/domain/repository"
 	"SignalForge/internal/infra/db/postgres"
 	"SignalForge/internal/infra/db/postgres/sqlc"
-	"encoding/json"
-	"fmt"
-	"time"
+	"SignalForge/internal/infra/metrics"
 )
 
 // handlePriceEvent processes a price event and triggers alerts
 func (s *Service) handlePriceEvent(event price.Event) error {
+	// Record price event metric
+	metrics.RecordPriceEvent(event.Exchange)
+
 	// Fetch all active alerts for this exchange/symbol
 	alerts, err := s.alertRepo.FetchActiveByKey(s.ctx, event.Exchange, event.Symbol)
 	if err != nil {
@@ -100,6 +105,9 @@ func (s *Service) triggerAlert(alert *repository.AlertWithUser, event price.Even
 	if err := tx.Commit(s.ctx); err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
+
+	// Record alert triggered metric
+	metrics.RecordAlertTriggered(event.Exchange, alert.Direction)
 
 	// 4. Unsubscribe from this exchange/symbol (with debounce)
 	// This decreases refCount, and if no other alerts need this subscription,

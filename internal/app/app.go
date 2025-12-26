@@ -16,6 +16,7 @@ import (
 	"SignalForge/internal/infra/db/postgres"
 	"SignalForge/internal/infra/exchanges/bybit"
 	"SignalForge/internal/infra/exchanges/gate"
+	"SignalForge/internal/infra/metrics"
 	"SignalForge/internal/infra/notification/pushover"
 	"SignalForge/internal/infra/notification/telegram"
 	infraRedis "SignalForge/internal/infra/redis"
@@ -33,6 +34,10 @@ type Application struct {
 	// Infrastructure
 	db    *pgxpool.Pool
 	redis *redis.Client
+
+	// Metrics
+	metrics       *metrics.Metrics
+	metricsServer *metrics.Server
 
 	// Services
 	tgbot    *tgbot.Bot
@@ -71,15 +76,21 @@ func New(cfg *config.Config, logger *slog.Logger) (*Application, error) {
 	app.redis = redisClient
 	logger.Info("redis connected")
 
-	// 3. Create repositories
+	// 3. Initialize metrics
+	app.metrics = metrics.New()
+	if cfg.Metrics.Enabled {
+		app.metricsServer = metrics.NewServer(logger, cfg.Metrics.Port)
+	}
+
+	// 4. Create repositories
 	userRepo := postgres.NewUserRepository(pool)
 	alertRepo := postgres.NewAlertRepository(pool)
 	jobRepo := postgres.NewJobRepository(pool)
 
-	// 4. Create symbol normalizer
+	// 5. Create symbol normalizer
 	normalizer := symbol.New()
 
-	// 5. Create exchange streams
+	// 6. Create exchange streams
 	streams := make(map[string]exchange.Stream)
 
 	// Gate.io stream
@@ -93,7 +104,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*Application, error) {
 	// TODO: Add Binance when ready
 	// streams["binance"] = binance.New(logger, normalizer)
 
-	// 6. Create rate limiters
+	// 7. Create rate limiters
 	rateLimits := make(map[notify.Channel]ratelimit.Limiter)
 
 	// Telegram rate limiter (30 msg/min)
@@ -110,7 +121,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*Application, error) {
 	})
 	rateLimits[notify.ChannelPushover] = pushoverRateLimit
 
-	// 7. Create notification senders
+	// 8. Create notification senders
 	senders := make(map[notify.Channel]notify.Sender)
 
 	// Telegram sender
@@ -121,7 +132,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*Application, error) {
 	pushoverSender := pushover.New(logger, cfg.Pushover.APIToken)
 	senders[notify.ChannelPushover] = pushoverSender
 
-	// 8. Create services
+	// 9. Create services
 	logger.Info("initializing services")
 
 	// Watcher service
@@ -162,6 +173,17 @@ func New(cfg *config.Config, logger *slog.Logger) (*Application, error) {
 // Run starts all application components
 func (a *Application) Run(ctx context.Context) error {
 	a.logger.Info("application starting")
+
+	// Start metrics server if enabled
+	if a.cfg.Metrics.Enabled && a.metricsServer != nil {
+		a.wg.Add(1)
+		go func() {
+			defer a.wg.Done()
+			if err := a.metricsServer.Start(); err != nil {
+				a.logger.Error("metrics server failed", "error", err)
+			}
+		}()
+	}
 
 	// Start watcher (price monitoring)
 	a.wg.Add(1)
@@ -216,6 +238,14 @@ func (a *Application) Shutdown(ctx context.Context) error {
 	a.logger.Info("stopping watcher")
 	if err := a.watcher.Stop(); err != nil {
 		a.logger.Error("watcher shutdown error", "error", err)
+	}
+
+	// Stop metrics server
+	if a.metricsServer != nil {
+		a.logger.Info("stopping metrics server")
+		if err := a.metricsServer.Stop(ctx); err != nil {
+			a.logger.Error("metrics server shutdown error", "error", err)
+		}
 	}
 
 	// Create a done channel to signal completion

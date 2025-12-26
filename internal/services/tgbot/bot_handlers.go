@@ -8,6 +8,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"SignalForge/internal/domain/repository"
+	"SignalForge/internal/infra/metrics"
 )
 
 func (b *Bot) handleStart(message *tgbotapi.Message, user *repository.User) {
@@ -130,6 +131,9 @@ func (b *Bot) handleNew(message *tgbotapi.Message, user *repository.User) {
 		return
 	}
 
+	// Record alert created metric
+	metrics.RecordAlertCreated(exchange)
+
 	// Subscribe to price updates
 	if err := b.watcher.Subscribe(exchange, symbol); err != nil {
 		b.logger.Error("failed to subscribe to watcher",
@@ -239,7 +243,7 @@ func (b *Bot) handleSettingsButton(message *tgbotapi.Message, user *repository.U
 func formatPrice(price float64) string {
 	switch {
 	case price >= 1000:
-		return fmt.Sprintf("$%,.2f", price)
+		return fmt.Sprintf("$%.2f", price)
 	case price >= 1:
 		return fmt.Sprintf("$%.2f", price)
 	case price >= 0.01:

@@ -1,8 +1,6 @@
 package gate
 
 import (
-	"SignalForge/internal/domain/price"
-	"SignalForge/internal/infra/symbol"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,36 +9,45 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"SignalForge/internal/domain/price"
+	"SignalForge/internal/infra/metrics"
+	"SignalForge/internal/infra/symbol"
 )
 
 const (
 	gateWSURL = "wss://fx-ws.gateio.ws/v4/ws/usdt"
 
+	// Gate.io WebSocket limits
 	maxSubscriptionsPerConn = 100
+	pingInterval            = 30 * time.Second
 	reconnectDelay          = 5 * time.Second
 )
 
+// Stream implements exchange.Stream for Gate.io
 type Stream struct {
 	logger     *slog.Logger
 	normalizer *symbol.Normalizer
 
+	// WebSocket connection
 	conn   *websocket.Conn
 	connMu sync.RWMutex
 
-	subscriptions map[string]bool
+	// Subscriptions
+	subscriptions map[string]bool // symbol -> subscribed
 	subMu         sync.RWMutex
 
+	// Events channel
 	events chan price.Event
 
-	ctx    context.Context
-	cancel context.CancelFunc
-
-	// sessionCancel отменяет горутины конкретного подключения
-	sessionCancel context.CancelFunc
-	wg            sync.WaitGroup
-	reconnectC    chan struct{}
+	// Lifecycle
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
+	reconnectC chan struct{}
 }
 
+// New creates a new Gate.io WebSocket stream
 func New(logger *slog.Logger, normalizer *symbol.Normalizer) *Stream {
 	return &Stream{
 		logger:        logger.With("exchange", "gate"),
@@ -51,124 +58,74 @@ func New(logger *slog.Logger, normalizer *symbol.Normalizer) *Stream {
 	}
 }
 
+// Exchange returns the exchange identifier
 func (s *Stream) Exchange() string {
 	return "gate"
 }
 
+// Start begins the WebSocket connection
 func (s *Stream) Start(ctx context.Context) error {
 	s.ctx, s.cancel = context.WithCancel(ctx)
+
 	s.logger.Info("starting gate.io stream")
 
-	// Первый запуск
+	// Connect
 	if err := s.connect(); err != nil {
-		s.logger.Error("initial connection failed, starting retry loop", "error", err)
-		s.triggerReconnect()
+		return fmt.Errorf("initial connection failed: %w", err)
 	}
 
-	// Обработчик реконнекта живет весь срок службы Stream
+	// Start ping/pong handler
+	s.wg.Add(1)
+	go s.pingHandler()
+
+	// Start message reader
+	s.wg.Add(1)
+	go s.readMessages()
+
+	// Start reconnect handler
 	s.wg.Add(1)
 	go s.reconnectHandler()
+
+	s.logger.Info("gate.io stream started")
 
 	<-s.ctx.Done()
 	s.cleanup()
 	s.wg.Wait()
-	return nil
-}
-
-func (s *Stream) connect() error {
-	s.connMu.Lock()
-	defer s.connMu.Unlock()
-
-	if s.sessionCancel != nil {
-		s.sessionCancel()
-	}
-	if s.conn != nil {
-		s.conn.Close()
-	}
-
-	dialer := websocket.DefaultDialer
-	dialer.HandshakeTimeout = 10 * time.Second
-	dialer.EnableCompression = true
-
-	// Gate.io requires this header for decimal size support
-	headers := map[string][]string{
-		"X-Gate-Size-Decimal": {"1"},
-	}
-
-	conn, _, err := dialer.Dial(gateWSURL, headers)
-	if err != nil {
-		return err
-	}
-
-	// Gorilla WebSocket automatically handles ping/pong
-	// We just need to ensure read/write don't timeout
-	conn.SetReadDeadline(time.Time{}) // No deadline - pings will keep it alive
-	conn.SetWriteDeadline(time.Time{})
-
-	s.conn = conn
-	var sessCtx context.Context
-	sessCtx, s.sessionCancel = context.WithCancel(s.ctx)
-
-	s.wg.Add(2)
-	go s.readMessages(sessCtx, conn)
-	go s.pingHandler(sessCtx, conn)
-
-	// Автоматическое восстановление подписок
-	go s.resubscribeAll()
 
 	return nil
 }
 
-func (s *Stream) IsConnected() bool {
-	s.connMu.RLock()
-	defer s.connMu.RUnlock()
-	return s.conn != nil
-}
-
-func (s *Stream) resubscribeAll() {
-	s.subMu.RLock()
-	symbols := make([]string, 0, len(s.subscriptions))
-	for sym := range s.subscriptions {
-		symbols = append(symbols, sym)
-	}
-	s.subMu.RUnlock()
-
-	for _, sym := range symbols {
-		if err := s.subscribe(sym); err != nil {
-			s.logger.Error("resubscribe failed", "symbol", sym, "error", err)
-		}
-	}
-}
-
+// Subscribe adds a symbol to the subscription list
 func (s *Stream) Subscribe(symbol string) error {
+	normalized := s.normalizer.Normalize(symbol)
+	gateSymbol := s.normalizer.ToExchangeFormat("gate", normalized)
+
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 
-	normalized := s.normalizer.Normalize(symbol)
 	if s.subscriptions[normalized] {
-		return nil
+		return nil // Already subscribed
 	}
 
-	if err := s.subscribe(normalized); err != nil {
-		return err
-	}
-
-	s.subscriptions[normalized] = true
-	return nil
-}
-
-func (s *Stream) subscribe(normalized string) error {
-	gateSymbol := s.normalizer.ToExchangeFormat("gate", normalized)
+	// Send subscribe message
 	msg := subscribeMessage{
 		Time:    time.Now().Unix(),
 		Channel: "futures.tickers",
 		Event:   "subscribe",
 		Payload: []string{gateSymbol},
 	}
-	return s.sendMessage(msg)
+
+	if err := s.sendMessage(msg); err != nil {
+		return fmt.Errorf("send subscribe: %w", err)
+	}
+
+	s.subscriptions[normalized] = true
+	s.logger.Info("subscribed", "symbol", normalized, "gate_symbol", gateSymbol)
+
+	return nil
 }
 
-// Unsubscribe удаляет символ из списка подписок
+// Unsubscribe removes a symbol from the subscription list
 func (s *Stream) Unsubscribe(symbol string) error {
 	normalized := s.normalizer.Normalize(symbol)
 	gateSymbol := s.normalizer.ToExchangeFormat("gate", normalized)
@@ -177,10 +134,10 @@ func (s *Stream) Unsubscribe(symbol string) error {
 	defer s.subMu.Unlock()
 
 	if !s.subscriptions[normalized] {
-		return nil // Не был подписан
+		return nil // Not subscribed
 	}
 
-	// Отправляем сообщение об отписке
+	// Send unsubscribe message
 	msg := subscribeMessage{
 		Time:    time.Now().Unix(),
 		Channel: "futures.tickers",
@@ -198,52 +155,225 @@ func (s *Stream) Unsubscribe(symbol string) error {
 	return nil
 }
 
-func (s *Stream) readMessages(ctx context.Context, conn *websocket.Conn) {
+// Events returns the events channel
+func (s *Stream) Events() <-chan price.Event {
+	return s.events
+}
+
+// IsConnected returns connection status
+func (s *Stream) IsConnected() bool {
+	s.connMu.RLock()
+	defer s.connMu.RUnlock()
+	return s.conn != nil
+}
+
+func (s *Stream) connect() error {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+
+	s.logger.Info("connecting to gate.io websocket")
+
+	conn, _, err := websocket.DefaultDialer.Dial(gateWSURL, nil)
+	if err != nil {
+		return fmt.Errorf("dial: %w", err)
+	}
+
+	s.conn = conn
+	s.logger.Info("connected to gate.io websocket")
+
+	// Record WebSocket connected metric
+	metrics.RecordWebSocketConnected("gate", true)
+
+	// Resubscribe to all symbols
+	s.subMu.RLock()
+	symbols := make([]string, 0, len(s.subscriptions))
+	for symbol := range s.subscriptions {
+		symbols = append(symbols, symbol)
+	}
+	s.subMu.RUnlock()
+
+	for _, symbol := range symbols {
+		gateSymbol := s.normalizer.ToExchangeFormat("gate", symbol)
+		msg := subscribeMessage{
+			Time:    time.Now().Unix(),
+			Channel: "futures.tickers",
+			Event:   "subscribe",
+			Payload: []string{gateSymbol},
+		}
+
+		if err := s.sendMessageLocked(msg); err != nil {
+			s.logger.Error("failed to resubscribe", "symbol", symbol, "error", err)
+		}
+	}
+
+	return nil
+}
+
+func (s *Stream) sendMessage(msg interface{}) error {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	return s.sendMessageLocked(msg)
+}
+
+func (s *Stream) sendMessageLocked(msg interface{}) error {
+	if s.conn == nil {
+		return fmt.Errorf("not connected")
+	}
+
+	return s.conn.WriteJSON(msg)
+}
+
+func (s *Stream) readMessages() {
 	defer s.wg.Done()
-	defer s.triggerReconnect()
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-s.ctx.Done():
 			return
 		default:
-			_, data, err := conn.ReadMessage()
-			if err != nil {
-				if ctx.Err() == nil {
-					s.logger.Error("websocket read error (triggering reconnect)", "error", err)
-				}
-				return
+		}
+
+		s.connMu.RLock()
+		conn := s.conn
+		s.connMu.RUnlock()
+
+		if conn == nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			s.logger.Error("read error", "error", err)
+			s.triggerReconnect()
+			// Wait a bit before trying to read again to avoid tight loop
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		if err := s.handleMessage(data); err != nil {
+			s.logger.Error("handle message error", "error", err)
+		}
+	}
+}
+
+func (s *Stream) handleMessage(data []byte) error {
+	var base baseMessage
+	if err := json.Unmarshal(data, &base); err != nil {
+		return fmt.Errorf("unmarshal base: %w", err)
+	}
+
+	// Handle different message types
+	switch base.Event {
+	case "update":
+		if base.Channel == "futures.tickers" {
+			return s.handleTickerUpdate(data)
+		}
+	case "subscribe", "unsubscribe":
+		s.logger.Debug("subscription response", "event", base.Event, "channel", base.Channel)
+	default:
+		s.logger.Debug("unknown event", "event", base.Event)
+	}
+
+	return nil
+}
+
+func (s *Stream) handleTickerUpdate(data []byte) error {
+	var msg tickerMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		return fmt.Errorf("unmarshal ticker: %w", err)
+	}
+
+	if len(msg.Result) == 0 {
+		return nil
+	}
+
+	ticker := msg.Result[0]
+
+	// Parse mark price
+	markPrice := 0.0
+	if _, err := fmt.Sscanf(ticker.MarkPrice, "%f", &markPrice); err != nil {
+		return fmt.Errorf("parse mark price: %w", err)
+	}
+
+	// Normalize symbol
+	normalized := s.normalizer.FromExchangeFormat("gate", ticker.Contract)
+
+	event := price.Event{
+		Exchange:  "gate",
+		Symbol:    normalized,
+		MarkPrice: markPrice,
+		Timestamp: time.Now(),
+	}
+
+	select {
+	case s.events <- event:
+	case <-s.ctx.Done():
+	default:
+		s.logger.Warn("events channel full, dropping event", "symbol", normalized)
+	}
+
+	return nil
+}
+
+func (s *Stream) pingHandler() {
+	defer s.wg.Done()
+
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+			msg := pingMessage{
+				Time:    time.Now().Unix(),
+				Channel: "futures.ping",
 			}
 
-			if err := s.handleMessage(data); err != nil {
-				s.logger.Error("message parsing error", "error", err)
+			if err := s.sendMessage(msg); err != nil {
+				s.logger.Error("ping failed", "error", err)
+				s.triggerReconnect()
 			}
 		}
 	}
 }
 
-func (s *Stream) pingHandler(ctx context.Context, conn *websocket.Conn) {
-	defer s.wg.Done()
-
-	// Gate.io handles ping/pong automatically at protocol level
-	// No need for application-level pings
-	// Just keep this goroutine alive to match the Start() wg.Add(2)
-	<-ctx.Done()
-}
-
 func (s *Stream) reconnectHandler() {
 	defer s.wg.Done()
+
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
 		case <-s.reconnectC:
-			s.logger.Info("reconnecting in...", "delay", reconnectDelay)
+			// Close old connection first
+			s.connMu.Lock()
+			if s.conn != nil {
+				s.conn.Close()
+				s.conn = nil
+			}
+			s.connMu.Unlock()
+
+			s.logger.Info("reconnecting...")
+
+			// Record reconnect attempt
+			metrics.RecordWebSocketReconnect("gate")
+
+			// Wait before reconnecting
 			time.Sleep(reconnectDelay)
 
+			// Try to reconnect
 			if err := s.connect(); err != nil {
 				s.logger.Error("reconnect failed", "error", err)
-				s.triggerReconnect()
+				// Retry after delay
+				time.AfterFunc(reconnectDelay, func() {
+					select {
+					case s.reconnectC <- struct{}{}:
+					default:
+					}
+				})
 			} else {
 				s.logger.Info("reconnected successfully")
 			}
@@ -255,118 +385,56 @@ func (s *Stream) triggerReconnect() {
 	select {
 	case s.reconnectC <- struct{}{}:
 	default:
-		// Уже запланировано
+		// Already triggered
 	}
-}
-
-func (s *Stream) sendMessage(msg interface{}) error {
-	s.connMu.RLock()
-	conn := s.conn
-	s.connMu.RUnlock()
-
-	if conn == nil {
-		return fmt.Errorf("connection closed")
-	}
-
-	// Set write deadline to prevent hanging
-	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	err := conn.WriteJSON(msg)
-
-	if err != nil {
-		// If write failed, trigger reconnect
-		s.logger.Warn("write failed, triggering reconnect", "error", err)
-		s.triggerReconnect()
-	}
-
-	return err
-}
-
-func (s *Stream) handleMessage(data []byte) error {
-	var base baseMessage
-	if err := json.Unmarshal(data, &base); err != nil {
-		return err
-	}
-
-	switch base.Event {
-	case "update":
-		if base.Channel == "futures.tickers" {
-			return s.handleTickerUpdate(data)
-		}
-	case "subscribe", "unsubscribe":
-		// Subscription confirmations
-		return nil
-	}
-
-	// Handle pong response from application-level ping
-	if base.Channel == "futures.pong" {
-		return nil
-	}
-
-	return nil
-}
-
-func (s *Stream) handleTickerUpdate(data []byte) error {
-	var msg tickerMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
-		return err
-	}
-	if len(msg.Result) == 0 {
-		return nil
-	}
-
-	ticker := msg.Result[0]
-	markPrice := 0.0
-	fmt.Sscanf(ticker.MarkPrice, "%f", &markPrice)
-
-	event := price.Event{
-		Exchange:  "gate",
-		Symbol:    s.normalizer.FromExchangeFormat("gate", ticker.Contract),
-		MarkPrice: markPrice,
-		Timestamp: time.Now(),
-	}
-
-	select {
-	case s.events <- event:
-	default:
-		s.logger.Warn("buffer full, drop event", "symbol", event.Symbol)
-	}
-	return nil
 }
 
 func (s *Stream) cleanup() {
-	s.connMu.Lock()
-	if s.sessionCancel != nil {
-		s.sessionCancel()
+	s.logger.Info("cleaning up gate.io stream")
+
+	if s.cancel != nil {
+		s.cancel()
 	}
+
+	s.connMu.Lock()
 	if s.conn != nil {
 		s.conn.Close()
 		s.conn = nil
 	}
 	s.connMu.Unlock()
+
+	close(s.events)
 }
 
-func (s *Stream) Events() <-chan price.Event { return s.events }
-
-// Типы сообщений (оставлены без изменений)
+// Message types
 type baseMessage struct {
 	Time    int64  `json:"time"`
 	Channel string `json:"channel"`
 	Event   string `json:"event"`
 }
+
 type subscribeMessage struct {
 	Time    int64    `json:"time"`
 	Channel string   `json:"channel"`
 	Event   string   `json:"event"`
 	Payload []string `json:"payload,omitempty"`
 }
+
 type pingMessage struct {
 	Time    int64  `json:"time"`
 	Channel string `json:"channel"`
 }
+
 type tickerMessage struct {
-	Result []tickerData `json:"result"`
+	Time    int64        `json:"time"`
+	Channel string       `json:"channel"`
+	Event   string       `json:"event"`
+	Result  []tickerData `json:"result"`
 }
+
 type tickerData struct {
-	Contract  string `json:"contract"`
-	MarkPrice string `json:"mark_price"`
+	Contract   string `json:"contract"`
+	MarkPrice  string `json:"mark_price"`
+	IndexPrice string `json:"index_price"`
+	Last       string `json:"last"`
 }

@@ -12,6 +12,7 @@ import (
 
 	"SignalForge/internal/domain/exchange"
 	"SignalForge/internal/domain/price"
+	"SignalForge/internal/infra/metrics"
 	"SignalForge/internal/infra/symbol"
 )
 
@@ -173,6 +174,9 @@ func (s *Stream) connect() error {
 
 	s.logger.Info("connected to bybit websocket")
 
+	// Record WebSocket connected metric
+	metrics.RecordWebSocketConnected("bybit", true)
+
 	// Resubscribe to all symbols
 	s.subMu.Lock()
 	for symbol := range s.subscriptions {
@@ -194,6 +198,9 @@ func (s *Stream) reconnectHandler() {
 			return
 		case <-s.reconnectC:
 			s.logger.Info("reconnecting in...", "delay", reconnectDelay)
+
+			// Record reconnect attempt
+			metrics.RecordWebSocketReconnect("bybit")
 
 			// Close old connection
 			s.connMu.Lock()
@@ -385,6 +392,9 @@ func (s *Stream) handleTickerUpdate(msg *tickerMessage) error {
 	if markPrice == 0 {
 		return nil
 	}
+
+	// Record price event metric
+	metrics.RecordPriceEvent("bybit")
 
 	event := price.Event{
 		Exchange:  "bybit",
