@@ -201,6 +201,25 @@ func (s *Service) performUnsubscribe(exchange, symbol string) {
 		return // Subscription was re-added
 	}
 
+	alerts, err := s.alertRepo.FetchActiveByKey(s.ctx, exchange, symbol)
+	if err != nil {
+		s.logger.Error("failed to check active alerts before unsubscribe",
+			"exchange", exchange,
+			"symbol", symbol,
+			"error", err)
+		return
+	}
+
+	if len(alerts) > 0 {
+		s.logger.Info("other active alerts exist, not unsubscribing",
+			"exchange", exchange,
+			"symbol", symbol,
+			"active_alerts", len(alerts))
+		sub.refCount = len(alerts)
+		return
+	}
+
+	// No active alerts anywhere, safe to unsubscribe
 	stream, ok := s.streams[exchange]
 	if !ok {
 		return
